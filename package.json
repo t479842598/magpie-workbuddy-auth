@@ -1,0 +1,13 @@
+{
+  "name": "magpie-workbuddy-auth",
+  "version": "0.1.31",
+  "description": "OpenCode provider plugins for WorkBuddy's plans: WorkBuddy (CodeBuddy, copilot.tencent.com) and WorkBuddy AI (www.workbuddy.ai)",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "README.md"],
+  "keywords": ["opencode", "opencode-plugin", "workbuddy", "codebuddy"],
+  "license": "MIT",
+  "magpie": { "verdicts": true },
+  "repository": { "type": "git", "url": "git+https://github.com/t479842598/magpie-workbuddy-auth.git" }
+}
