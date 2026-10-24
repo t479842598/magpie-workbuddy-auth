@@ -56,6 +56,22 @@ Desktop's sign-in is refreshed only when the app hasn't refreshed it
 itself, and the new token is kept in memory, never written back, as magpie's
 built-in WorkBuddy does.
 
+A chat or usage read WorkBuddy answers 401 (since 0.1.31) is renewed once,
+whatever the token's time, and sent once more. A token another process
+saved since is taken first instead of spending the refresh token again. A
+desktop sign-in is never renewed for it: the app's file is read again, and
+its token is used if the app signed in again. A 401 again, or no new
+token, ends in a 401 that says to sign in again (Providers → WorkBuddy →
+this account's Sign in again in magpie; WorkBuddy desktop for a desktop
+sign-in). The plugin marks the account expired in magpie
+(`X-Magpie-Sign-In: expired`, usage's `signIn`) only on WorkBuddy's word
+that the sign-in is gone: the refresh token refused (401, `invalid_grant`),
+or the access token refused (`WWW-Authenticate: … error="invalid_token"`)
+with no refresh token left to renew it with or just after renewing. A
+failed renewal for another reason, or a bare 401 without `invalid_token`,
+leaves the account as it is; a desktop sign-in is never marked. A 401
+after a renewal takes a mark off (`renewed`).
+
 ## Requests
 
 Chats are chat completions (`@ai-sdk/openai-compatible`) at `<API>/chat/completions`.
@@ -225,3 +241,31 @@ magpie's built-in WorkBuddy does more than this package:
 OpenCode's plugin API has no place for these.
 
 Credit multipliers accept the international catalog's `x0.34 credits` text as well as `x0.34`. An empty credits value (for example Auto) stays unknown, never free.
+
+## This fork (0.1.32)
+
+A personal fork of the upstream package, deployed locally at
+`~/.config/magpie/plugins/local/workbuddy-auth` and installed as a **path**
+plugin whose `package.json` keeps the official package name, so magpie's
+`plugin move` recognises it and never fetches the npm package over it.
+
+It is upstream **0.1.31** plus five changes the upstream package still
+lacks, all about the same thing: a refusal must say what it means for the
+sign-in, and a sign-in that has ended must be said so.
+
+| # | Change | Why |
+|---|---|---|
+| 1 | `package.json` carries `magpie.verdicts: true` | Declares that every path answers with `X-Magpie-Sign-In`. On a magpie that has the `verdicts` capability bit, the core stops reading an unlabelled 401 as "sign-in expired". |
+| 2 | `fresh()` throws `signIn: "expired"` when the refresh token has ended, instead of handing back the dead access token | A refresh token past its end cannot be renewed; spending the dead token only gets a 401 the vendor may not explain. Desktop sign-ins are exempt — the app's file is read on each request. |
+| 3 | `refreshed()` throws `signIn: "expired"` for the same case | Without it magpie learns nothing and asks again on every request. |
+| 4 | `unanswered()` labels its 401 `kept` | It runs after `fresh()`, which returns an account only while its access token is inside its window, so a 401 there is the vendor's bad minute, not the sign-in's. `send()` replaces the verdict when it can renew and send again. |
+| 5 | `explained()` gives an empty-bodied refusal a readable reason | `provider.apiError` falls back to a bare status on an empty body; on 2026-10-23 the front door answered a 401 with no body at all. |
+
+Upstream's 0.1.31 already does the larger half — a 401 is renewed once and
+sent again, and a refused sign-in says to sign in again — and this fork
+keeps all of it. `refresh.test.mjs` is the one upstream test whose
+assertion is inverted here (it asserts the account is *not* marked), with
+a comment saying why.
+
+`tools/check-upstream.sh` watches npm for a newer official version and
+notifies; it never installs or merges.

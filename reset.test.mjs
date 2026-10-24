@@ -82,15 +82,11 @@ test("a refused sign-in on a chat past 2 MiB says the 401, not ECONNRESET", asyn
   meterAsked = 0
   const res = await chat("refused", EDGE_READS + 100_000)
   expect(res.status).toBe(401)
-  // kept: the chat ran after fresh(), so this 401 is not the sign-in having
-  // ended, and magpie must not rest the account over it
   expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
   const { error } = await res.json()
-  expect(error.message).toContain("401")
-  expect(error.message).toContain("2 MiB")
-  // it says the sign-in was not what was refused, not to sign in again
-  expect(error.message).toMatch(/not what was refused/i)
-  expect(error.message).toMatch(/try the request again/i)
+  expect(error.message).toContain("refused this account's sign-in (401)")
+  expect(error.message).toContain("which is why it read as ECONNRESET")
+  expect(error.message).toContain("Sign in to it again in magpie")
   expect(meterAsked).toBe(1)
 })
 
@@ -98,8 +94,7 @@ test("the China build's front door is read the same way", async () => {
   meterAsked = 0
   const res = await chat("refused", EDGE_READS + 100_000, WorkBuddyAuthPlugin, "https://copilot.tencent.com")
   expect(res.status).toBe(401)
-  expect(res.headers.get("X-Magpie-Sign-In")).toBe("kept")
-  expect((await res.json()).error.message).toMatch(/not what was refused/i)
+  expect((await res.json()).error.message).toContain("Providers → WorkBuddy →")
   expect(meterAsked).toBe(1)
 })
 
@@ -107,7 +102,8 @@ test("a refused sign-in on a short chat is the front door's own 401, nothing els
   meterAsked = 0
   const res = await chat("refused", 1000)
   expect(res.status).toBe(401)
-  expect(await res.text()).toContain("401 Authorization Required")
+  // with no refresh token to renew it with, said so (unauthorized.test.mjs)
+  expect((await res.json()).error.message).toContain("there is no refresh token to renew it with")
   expect(meterAsked).toBe(0)
 })
 

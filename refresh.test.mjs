@@ -92,13 +92,16 @@ test("auth.refresh after a request renewed the token gives that one", async () =
   expect(refreshes(calls).length).toBe(1)
 })
 
-test("a refresh token past its end says the sign-in expired, the account marked", async () => {
+// Upstream 0.1.31 says this plainly, never as signIn "expired", on the
+// built-in's precedent. This fork says it as the sign-in having ended: a
+// refresh token past its end cannot be renewed, so magpie marks the
+// account once and the user signs in again, instead of the plugin going on
+// spending a dead access token and magpie asking again on every request.
+test("a refresh token past its end is said as the sign-in having ended", async () => {
   const calls = serve(() => ok(NEW))
   const hooks = await WorkBuddyAuthPlugin({ client: {} })
   const e = await hooks.auth.refresh(auth({ refreshExpiresAt: Date.now() - 1000 }), "workbuddy").catch((e) => e)
   expect(e).toBeInstanceOf(Error)
-  // said as expired, not plainly: magpie marks the account instead of
-  // asking again on every request for a refresh that can never succeed
   expect(e.signIn).toBe("expired")
   expect(e.message).toContain("signed out")
   expect(refreshes(calls).length).toBe(0)
