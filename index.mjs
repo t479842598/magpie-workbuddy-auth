@@ -28,7 +28,7 @@ const CN_MODELS = [
   ["hy4-preview-f", "Hy4 preview", 1000000, ["high"]],
   ["hy3", "Hy3", 192000, ["low", "high"]],
   ["hy3-x", "Hy3-X", 192000, ["low", "high"]],
-  ["deepseek-v4.1-flash", "Deepseek-V4.1-Flash", 1000000],
+  ["deepseek-v4.1-flash", "Deepseek-V4.1-Flash", 1000000, ["none", "low", "high", "max"]],
   ["glm-5.3", "GLM-5.3", 1000000, ["low", "high", "max"]],
   ["glm-5.3-flash", "GLM-5.3-Flash", 1000000, ["low", "high", "max"]],
   ["glm-5.2", "GLM-5.2", 1000000, ["high", "xhigh"]],
@@ -108,6 +108,28 @@ const SITES = {
     noImages: /^glm-/,
   },
 }
+
+// A model's context is its config's maxInputTokens, on both sites. 0.2.7
+// capped deepseek-v4.1-flash at 100000 on copilot.tencent.com from one
+// report's error ("prompt is too long: 100001 tokens > 100000 maximum"),
+// and it was wrong: on 2026-10-31 China Free-plan accounts of three other
+// users took 110,041 to 992,389-token prompts on it there, the whole prompt
+// read (needles recalled), and the vendor's own refusal of 1,157,831 named
+// 1048576 as the maximum (plugins#561). The cap made every client compact at
+// 100k. Where a prompt really is too long, WorkBuddy's 400 says "prompt is
+// too long" and goes to the client as it came (explained), which magpie
+// reads as the context overflowing (context_length_exceeded): the agent is
+// told to compact, and the account isn't rested for it.
+
+// OFF_TAKEN are models that turn thinking off for reasoning_effort "none"
+// though the config says onlyReasoning (so WorkBuddy's own client offers no
+// off switch): deepseek-v4.1-flash, and the same model under its paid id.
+// Measured 2026-10-31 on www.workbuddy.ai: "none" answered 200 with 0
+// reasoning tokens on both, where "low" thought 1221 and 1127; and on the
+// China build by the reporter of plugins#563 (0 reasoning tokens, a 30-item
+// prompt in 14s instead of 50s). Without the level magpie sends "low" for
+// a client's "none".
+const OFF_TAKEN = new Set(["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
 
 // textOnly says whether site drops the images sent to model, whatever its
 // config says. On 2026-10-13, with a real WorkBuddy AI account (Yirasumi on
@@ -431,16 +453,26 @@ function enterpriseHeaders(a) {
   return id ? { "X-Enterprise-Id": id, "X-Tenant-Id": id } : {}
 }
 
-// enterpriseOf is the enterprise the account a sign-in gave belongs to:
-// the one /login/account names, else, for an account that isn't personal,
-// the one WorkBuddy's account list has for it — the same choice WorkBuddy's
-// own client makes (mergeCurrentAccountDetails): the uid's only entry of that
-// type, or the only one it last signed in to. None found is personal.
+// enterpriseOf is the enterprise the account a sign-in gave belongs to,
+// { id, name }: the one /login/account names, else, for an account that
+// isn't personal, the one WorkBuddy's account list has for it — the same
+// choice WorkBuddy's own client makes (mergeCurrentAccountDetails): the
+// uid's only entry of that type, or the only one it last signed in to. None
+// found is personal ({ id: "" }).
+//
+// Which account that is was chosen on WorkBuddy's sign-in page: after a
+// phone sign-in it lists the person's accounts (personal, a team,
+// 「WorkBuddy 教育公益版」…) and binds the one picked to the sign-in's state
+// (POST /console/login/enterprise/<id>?state=…), so the token and
+// /login/account this plugin reads by that state are the chosen account's.
 async function enterpriseOf(site, a, who) {
+  const name = (x) => (typeof x?.enterpriseName === "string" ? x.enterpriseName.trim() : "")
   const own = typeof who?.enterpriseId === "string" ? who.enterpriseId.trim() : ""
-  if (own) return own
   const type = String(who?.type ?? "").trim().toLowerCase()
-  if (!type || type === "personal") return ""
+  if (!own && (!type || type === "personal")) return { id: "", name: "" }
+  // a name /login/account leaves out is the account list's, as the
+  // client merges the two
+  if (own && name(who)) return { id: own, name: name(who) }
   let list
   try {
     list = await call(site, "GET", "/v2/plugin/accounts", {
@@ -448,13 +480,29 @@ async function enterpriseOf(site, a, who) {
       "X-Domain": domainOf(site, a),
     })
   } catch {
-    return ""
+    return { id: own, name: "" }
   }
   const mine = (list?.accounts ?? []).filter((x) => x?.uid === who.uid && typeof x.enterpriseId === "string" && x.enterpriseId.trim())
+  if (own) return { id: own, name: name(mine.find((x) => x.enterpriseId.trim() === own)) }
   const same = mine.filter((x) => String(x.type ?? "").trim().toLowerCase() === type)
   const last = mine.filter((x) => x.lastLogin)
   const pick = same.length === 1 ? same[0] : last.length === 1 ? last[0] : mine.length === 1 ? mine[0] : undefined
-  return pick ? pick.enterpriseId.trim() : ""
+  return pick ? { id: pick.enterpriseId.trim(), name: name(pick) } : { id: "", name: "" }
+}
+
+// accountName is what magpie lists an account a sign-in gave as: the
+// person's name, and for an enterprise (team, education) account the
+// enterprise's too. One person's personal account and their enterprise one
+// share the uid and the nickname, and magpie's plugin host keeps one
+// account per name and uid (settle in host.js): named alike, signing in to
+// 「WorkBuddy 教育公益版」 took the place of the same person's personal
+// account, and the two could never be in one pool. An enterprise WorkBuddy
+// names no name for is told by the end of its id.
+function accountName(who, ent) {
+  const person = who?.nickname || who?.phoneNumber || who?.uid || ""
+  if (!ent?.id) return person
+  const team = ent.name || `enterprise ${ent.id.slice(-6)}`
+  return person ? `${person} · ${team}` : team
 }
 
 // WorkBuddy's own client names each chat to its gateway four ways: the
@@ -809,8 +857,14 @@ const FLAGGED = [
   [/(?<!the )Codex CLI is an open source project led by OpenAI\./gi, "The Codex CLI is an open source project led by OpenAI."],
   // DeepSeek Harness (DSH) opens its system prompt with this line, which
   // WorkBuddy refuses as 11128 (magpie-community/plugins#279; the same
-  // refusal traced in smart-open/TraeWorkAssistant#125).
-  [/You are an AI agent powered by DeepSeek Harness\.?/gi, "You are an AI agent that helps the user with programming tasks."],
+  // refusal traced in smart-open/TraeWorkAssistant#125). WorkBuddy matches
+  // the line whole and exactly, so a comma is enough to pass: measured on
+  // 2026-10-30 against copilot.tencent.com, one account, streamed, the line
+  // as DSH writes it answered 400 code 11128 and the same line with the
+  // comma answered 200. Saying it in another agent's terms passed too, but
+  // took the harness's own name out of the only line that says which agent
+  // runs here, and that name is what the rest of the prompt refers back to.
+  [/You are an AI agent powered by DeepSeek Harness\.?/gi, "You are an AI agent, powered by DeepSeek Harness."],
   // A line WorkBuddy refuses in a long DeepSeek Harness chat, measured 400
   // then 200 with this wording by tearslee (magpie-community/plugins#291). The
   // model can quote it back into an assistant message, which the move to
@@ -990,6 +1044,79 @@ function systemAsUserOn(b) {
   }
   b.messages = [{ role: "system", content: DEFAULT_SYSTEM }, ...rest]
   return true
+}
+
+// OPENERS are the shapes in which an agent's opening says which harness it
+// runs in, as a vendor may have fingerprinted one. A vendor matches a refused
+// line whole and exactly — one extra space passes it, as FLAGGED's note above
+// has it — so the same line with one more comma passes while still saying
+// what it said. Measured 2026-10-30 against copilot.tencent.com, one account,
+// streamed, deepseek-v4.1-flash at max: DeepSeek Harness's opener answered
+// 400 code 11128 as written, and 200 with the comma, the harness's name still
+// in it; a suffix in its place (…Harness Desktop., …Harness CLI.) changed
+// nothing, so it is the line's shape the vendor knows, not the product alone.
+const OPENERS = [
+  [/(\bYou are (?:an?|the)\s[^\n.,]{0,60}?\b(?:agent|assistant))\s+(powered by|running on|running in|built on|based on)\b/gi, "$1, $2"],
+]
+
+function opened(text) {
+  for (const [re, to] of OPENERS) text = text.replace(re, to)
+  return text
+}
+
+// commaPaused is body with OPENERS' comma set in its system and assistant
+// messages — the two WorkBuddy reads (REFUSED.md). The user's messages and
+// tools' results are not among them: a comma in a message the vendor never
+// matches changes what someone said without changing what was refused, and
+// the user's own words come back altered. It is tried before systemAsUser,
+// which takes the system prompt out of the slot an agent's instructions are
+// read in. null when there was nothing to set a comma in.
+//
+// The two roles are read off the message's own role: a message with no role,
+// or one of another kind, is left as it is. roles, when given, collects the
+// roles the comma went into — the caller uses it to tell a comma that made a
+// chat pass in its system prompt from one that only set an assistant
+// message's (commaSystems).
+const PAUSED_ROLES = new Set(["system", "assistant"])
+
+function commaPaused(body, roles) {
+  const b = chatOf(body)
+  return commaPausedOn(b, roles) ? JSON.stringify(b) : null
+}
+
+// commaPausedOn makes commaPaused's change on a chat's object, in place; false
+// when there was nothing to set a comma in. commaPaused is this on a body, and
+// the first send of a system prompt whose comma passed is this too
+// (commaSystems), so the two can never drift apart.
+function commaPausedOn(b, roles) {
+  const msgs = b?.messages
+  if (!Array.isArray(msgs)) return false
+  let changed = false
+  for (const m of msgs) {
+    if (!PAUSED_ROLES.has(m?.role)) continue
+    let mine = false
+    if (typeof m.content === "string") {
+      const t = opened(m.content)
+      if (t !== m.content) {
+        m.content = t
+        mine = true
+      }
+    } else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (typeof p?.text !== "string") continue
+        const t = opened(p.text)
+        if (t === p.text) continue
+        p.text = t
+        mine = true
+      }
+    }
+    // a message whose parts held no opening of their own is not changed, and
+    // is not reported as one that was
+    if (!mine) continue
+    changed = true
+    roles?.add(m.role)
+  }
+  return changed
 }
 
 // normalizeToolChoice converts the object form emitted by OpenAI clients to
@@ -1510,6 +1637,113 @@ function renamed(res, names) {
   return new Response(body, { status: res.status, statusText: res.statusText, headers })
 }
 
+// FILTER_SAYS is the text WorkBuddy's safety filter puts in a reply it ends
+// with finish_reason "content_filter": deepseek-v4.1-flash on
+// copilot.tencent.com reasoned, said this, and ended content_filter with
+// no output tokens counted (itspig, plugins #540).
+const FILTER_SAYS = ["Sorry, I can't respond to this question."]
+
+// filterSaid tells whether text said so far may still be FILTER_SAYS, with
+// white space on either side: copilot.tencent.com sends it as
+// "\nSorry, I can't respond to this question.\n" (itspig, plugins #540).
+// Text that is only white space so far may still be it; text that goes on
+// past it is not.
+const filterSaid = (text) => {
+  const t = text.replace(/’/g, "'").trim()
+  return FILTER_SAYS.some((s) => s.startsWith(t))
+}
+
+// unsaid is a streamed chat whose reply WorkBuddy's filter refused with its
+// text (FILTER_SAYS) and finish_reason content_filter, with the text taken
+// out: a reply that says nothing before content_filter is the refusal magpie
+// asks the group's next member for, where a 200 that said something is an
+// answer the agent fails on ("The model refused to complete the request",
+// plugins #540). Only text that is still the filter's is held, so any other
+// reply's first words go as they come, and one that only begins like it is
+// let through at its first word that isn't, or at its end.
+function unsaid(res) {
+  if (!res.body || !/event-stream/i.test(res.headers.get("content-type") ?? "")) return res
+  const headers = new Headers(res.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  let rest = ""
+  let open = true // the reply may still be the filter's
+  let said = ""
+  let held = [] // events held while it may be
+  const chunkOf = (ev) => {
+    const m = /^data:\s?(.*)$/m.exec(ev)
+    if (!m || m[1] === "[DONE]") return null
+    try {
+      const v = JSON.parse(m[1])
+      return v && typeof v === "object" ? v : null
+    } catch {
+      return null
+    }
+  }
+  // without is ev with the filter's text taken out, or "" when nothing
+  // else is in it
+  const without = (ev) => {
+    const v = chunkOf(ev)
+    const c = v?.choices?.[0]
+    if (!c?.delta || typeof c.delta.content !== "string") return ev
+    delete c.delta.content
+    const left = Object.keys(c.delta).filter((k) => k !== "role")
+    if (!left.length && c.finish_reason == null && v.usage == null) return ""
+    return `data: ${JSON.stringify(v)}`
+  }
+  const event = (ev) => {
+    if (!open) return [ev]
+    const c = chunkOf(ev)?.choices?.[0]
+    const text = typeof c?.delta?.content === "string" ? c.delta.content : ""
+    const finish = c?.finish_reason
+    // copilot.tencent.com sends "tool_calls": [] on every delta, text
+    // too: only a list with a call in it is one
+    const calls = c?.delta?.tool_calls
+    if ((Array.isArray(calls) ? calls.length > 0 : calls) || (text && !filterSaid(said + text))) {
+      open = false
+      const out = [...held, ev]
+      held = []
+      return out
+    }
+    said += text
+    if (finish === "content_filter" && said) {
+      open = false
+      const out = [...held, ev].map(without).filter(Boolean)
+      held = []
+      return out
+    }
+    if (finish) {
+      open = false
+      const out = [...held, ev]
+      held = []
+      return out
+    }
+    if (!said) return [ev] // reasoning, the role, before any text
+    held.push(ev)
+    return []
+  }
+  const body = res.body.pipeThrough(
+    new TransformStream({
+      transform(chunk, ctl) {
+        rest = (rest + dec.decode(chunk, { stream: true })).replace(/\r\n/g, "\n")
+        const evs = rest.split("\n\n")
+        rest = evs.pop()
+        const out = evs.flatMap(event)
+        if (out.length) ctl.enqueue(enc.encode(out.map((e) => e + "\n\n").join("")))
+      },
+      flush(ctl) {
+        rest += dec.decode()
+        const out = held.map((e) => e + "\n\n").join("") + rest
+        held = []
+        if (out) ctl.enqueue(enc.encode(out))
+      },
+    }),
+  )
+  return new Response(body, { status: res.status, statusText: res.statusText, headers })
+}
+
 // ---- signing in -------------------------------------------------------------
 
 // poll asks path until WorkBuddy answers with data, retrying the codes
@@ -1557,8 +1791,9 @@ async function browserSignIn(site) {
           "X-No-Enterprise-Id": "true",
         }, [12151], deadline)
         a.uid = who.uid ?? ""
-        a.enterpriseId = await enterpriseOf(site, a, who)
-        return success(site, a, who.nickname || who.phoneNumber || who.uid)
+        const ent = await enterpriseOf(site, a, who)
+        a.enterpriseId = ent.id
+        return success(site, a, accountName(who, ent))
       } catch (e) {
         return { type: "failed", error: e.message }
       }
@@ -2949,7 +3184,8 @@ async function liveModels(site, a) {
         const es = effortsOf(d, site, id)
         if (es.length) {
           const canOff = d.reasoning?.canDisableThinking
-          m.efforts = [...(!d.onlyReasoning && (canOff == null || canOff) ? ["none"] : []), ...es]
+          const off = (!d.onlyReasoning && (canOff == null || canOff)) || OFF_TAKEN.has(id)
+          m.efforts = [...(off ? ["none"] : []), ...es]
           const def = defaultEffortOf(d, es)
           if (def) m.effort = def
         }
@@ -3037,6 +3273,13 @@ function makePlugin(site) {
   // the system prompts this run WorkBuddy refused as an unapproved channel:
   // their next chats go with systemAsUser at once, not refused first
   const refusedSystems = new Set()
+  // the system prompts this run WorkBuddy refused as written and took with
+  // OPENERS' comma: their next chats go with the comma set before the first
+  // send, as a moved one goes moved. Without it every turn of that agent —
+  // and every step of its tool loop — pays a refused round trip first, which
+  // is latency on each request and a pattern of channel refusals on the
+  // account. Bounded as refusedSystems is.
+  const commaSystems = new Set()
   return async ({ client, magpie }) => {
   // each account's list as last read, for FREE_ONLY: {at, list}
   const lists = new Map()
@@ -3287,6 +3530,10 @@ function makePlugin(site) {
             // words at once (see systemAsUser)
             const sysKey = native ? "" : systemKeyOf(chat)
             if (sysKey && refusedSystems.has(sysKey) && systemAsUserOn(chat)) changed = true
+            // a system prompt whose comma passed once goes with the comma
+            // set before the first send (see commaSystems), the way one
+            // refused before goes moved above
+            if (sysKey && commaSystems.has(sysKey) && commaPausedOn(chat)) changed = true
             // shaped is a body as such a model takes it. The first try's
             // is made on the chat already parsed, after the move above,
             // as shaped would make it of the body written; a resend with
@@ -3314,7 +3561,27 @@ function makePlugin(site) {
               else res = new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers })
             }
             if (res.status === 400 && !native) {              let text = await res.text()
-              const moved = REFUSED.test(text) && sysKey && !refusedSystems.has(sysKey) ? systemAsUser(body) : null
+              // the vendor may know a shape of the agent's opening that FLAGGED
+              // doesn't: the same words said with one more comma pass it, and
+              // that is tried before the system prompt is moved out of its slot.
+              // The roles the comma went into are kept: one set in the system
+              // prompt is what its next chats go with, one set in an assistant
+              // message alone says nothing about the next chat's.
+              const roles = new Set()
+              const paused = REFUSED.test(text) ? commaPaused(body, roles) : null
+              if (paused) {
+                body = paused
+                res = await send(shaped(body))
+                if (res.status === 400) text = await res.text()
+                // not refused this time: the comma is what passed the
+                // vendor's check, so this system prompt's next chats go
+                // with it set before the first send
+                else if (sysKey && roles.has("system")) {
+                  commaSystems.add(sysKey)
+                  if (commaSystems.size > 256) commaSystems.delete(commaSystems.values().next().value)
+                }
+              }
+              const moved = res.status === 400 && REFUSED.test(text) && sysKey && !refusedSystems.has(sysKey) ? systemAsUser(body) : null
               if (moved) {
                 refusedSystems.add(sysKey)
                 if (refusedSystems.size > 256) refusedSystems.delete(refusedSystems.values().next().value)
@@ -3332,7 +3599,7 @@ function makePlugin(site) {
             }
             if (ours.has(res)) return res
             // renewed here: a mark the account had comes off
-            return res.status >= 400 ? explained(res) : kept(native ? res : await renamed(res, names), renewed ? "renewed" : "kept")
+            return res.status >= 400 ? explained(res) : kept(native ? res : unsaid(await renamed(res, names)), renewed ? "renewed" : "kept")
           },
         }
       },
@@ -3443,6 +3710,13 @@ function makePlugin(site) {
 // apart from WorkBuddy's own words.
 const REFUSED_HINT =
   "WorkBuddy refused words in this client's prompt (most often its system prompt); use it from Hermes, OpenCode or Pi, or add another provider to this group"
+
+// REFUSED_DOC is where a refusal's fix is written down, for whoever holds the
+// error next: the person reading it, or the agent they paste it to. It goes
+// before the hint, never after, because magpie's Routing page tells the hint
+// from WorkBuddy's own words by the error ending in it.
+const REFUSED_DOC = "https://github.com/magpie-community/plugins/blob/main/packages/workbuddy/REFUSED.md"
+
 const REFUSED = /unapproved channel|illegal api invocation/i
 
 // BAD_SIGNATURE is WorkBuddy's refusal of a thinking block whose signature it
@@ -3545,7 +3819,11 @@ async function explained(res) {
   const hint = isRefused ? REFUSED_HINT : isRestricted ? RESTRICTED_HINT : EXHAUSTED_HINT
   const type = isRefused || isRestricted ? "permission_error" : "insufficient_quota"
   const errCode = isRefused ? null : isRestricted ? RESTRICTED_CODE : 14018
-  msg = `${msg} — ${hint}`
+  // a refusal says where its fix is written down, so whoever holds the error
+  // — the person, or the agent they paste it to — can go and read it. It goes
+  // before the hint, never after: the hint is the message's end.
+  const where = isRefused ? `${REFUSED_DOC} — ` : ""
+  msg = `${msg} — ${where}${hint}`
   const headers = new Headers(res.headers)
   headers.set("content-type", "application/json")
   headers.delete("content-length")
@@ -3558,4 +3836,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { idFor, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }
+export const _internal = { idFor, OFF_TAKEN, replyAfterToolsOn, withDefaultEffort, defaultEffortOf, gzipped, FREE_ONLY, PRICE_TTL, keyAccount, remoteConfig, cycleOf, typeUnions, systemAsUser, systemKey, DEFAULT_SYSTEM, EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, accountName, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, asReasoning, normalizeToolChoice, fitTools, fitted, renamed, unsaid, FILTER_SAYS, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, REFUSED_DOC, commaPaused, commaPausedOn, opened, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, scopeOf, turnKey, conversationKey, signatureOf, isMessages, withoutUnsigned, withoutSignedThinking, prepared, answeredBefore, nativeOf, modelOf, configModels, freeWindowOf, tokensShort, freeWindowRows, freeWindowLedger, readLedgerTail, pinned, rowTime, rowAccount, ofAccount, windowOffset, windowReset, FREE_WINDOW_MODELS, FREE_WINDOW_SPAN, FREE_WINDOW_GAP, FREE_WINDOW_LEAD, checkinOf, API_MESSAGES: NPM_MESSAGES, API_CHAT: NPM }

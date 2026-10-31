@@ -14,7 +14,7 @@ set -u
 export PATH="/Users/qingtang/.local/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 PKG="@magpie-community/opencode-workbuddy-auth"
-BASE="0.2.0"                      # 本地 fork 0.2.1 所基于的官方版本
+BASE="0.2.8"                      # 本地 fork 0.2.8 所基于的官方版本
 DIR="$HOME/.config/magpie/plugins/local"
 STATE="$DIR/upstream-update.json"
 NPM="/Users/qingtang/.local/node/bin/npm"

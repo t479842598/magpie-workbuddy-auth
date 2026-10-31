@@ -61,6 +61,19 @@ as WorkBuddy's own client sends them; without them WorkBuddy answers as the
 personal account, with the personal plan's models. A browser sign-in made
 before 0.1.13 has no enterprise id kept: sign in again.
 
+Which account a browser sign-in gives is chosen on WorkBuddy's own sign-in
+page. After a phone sign-in it lists the person's accounts (personal, a
+team, 「WorkBuddy 教育公益版」…) and binds the one picked to the sign-in, so
+to add an education or team account, pick it there. Its account is named
+with the enterprise too (`nickname · enterprise name`, or the end of the
+enterprise id when WorkBuddy names none): one person's personal and
+enterprise accounts share the uid and the nickname, and magpie keeps one
+account per name and uid, so before 0.2.1 signing in to the enterprise
+account replaced the personal one. An enterprise account signed in before
+0.2.1 keeps its old name until its Sign in again, which renames it in
+place; its free-model window, read from usage rows kept under the old
+name, starts again from the new one.
+
 Desktop's sign-in is refreshed only when the app hasn't refreshed it
 itself, and the new token is kept in memory, never written back, as magpie's
 built-in WorkBuddy does.
@@ -161,21 +174,33 @@ default one, as the app does.
 
 WorkBuddy refuses some agents' identity lines as an "unapproved channel"
 (11128), so those lines are reworded before a chat goes out. Since 0.1.27
-(#279) that includes DeepSeek Harness's opening line. A refusal of words
-not reworded yet is sent once more, since 0.1.29, with the system prompt
-moved into the first user message (inside `<instructions>` tags) and
-WorkBuddy's default system prompt in its place: WorkBuddy checks only the
-system and assistant messages, and the line it matched is then in neither.
-A system message later in the chat becomes a user message where it stands.
-The plugin remembers each refused system prompt while it is loaded, so that
-agent's next chats go moved at once. The move can't reach an assistant
-message, so words the model quotes back into one keep that chat refused
-until they are in the list reworded in every message (since 0.1.30, the "Web GUI whose URL the runtime
-context names" line, #291); otherwise only a new chat clears it. A refusal
-that stands after the move ends in a hint that names no one client
-(since 0.1.28): WorkBuddy refused words in this client's prompt; use it from
-Hermes, OpenCode or Pi, or add another provider to the group. Neither
-refusal rests the account.
+(#279) that includes DeepSeek Harness's opening line. Since 0.2.3 a refusal
+of words not reworded yet is answered first by saying the same line with one
+more comma — a vendor matches such a line whole and exactly, so the comma
+passes it while the line still names the harness (measured 2026-10-30; a word
+added after the product name did not pass, the comma did). The comma is set in
+the system and assistant messages only — the two WorkBuddy reads — so the
+user's own words and tools' results go out as they were sent. A system prompt
+whose comma passed is remembered while the plugin is loaded, as a moved one
+is, and its next chats go with the comma already in before the first send:
+otherwise every turn, and every step of a tool loop, would pay the refusal
+once. Only a chat refused still is sent once more, since 0.1.29, with the
+system prompt moved into the first user message (inside `<instructions>` tags)
+and WorkBuddy's default system prompt in its place: WorkBuddy checks only the
+system and assistant messages, and the line it matched is then in neither. A system message later
+in the chat becomes a user message where it stands. The plugin remembers each
+refused system prompt while it is loaded, so that agent's next chats go moved
+at once. The move can't reach an assistant message, so words the model quotes
+back into one keep that chat refused until they are in the list reworded in
+every message (since 0.1.30, the "Web GUI whose URL the runtime context names"
+line, #291); otherwise only a new chat clears it. A refusal that stands after
+the move ends in a hint that names no one client (since 0.1.28): WorkBuddy
+refused words in this client's prompt; use it from Hermes, OpenCode or Pi, or
+add another provider to the group. Since 0.2.3 that hint is preceded by the
+address of [REFUSED.md](REFUSED.md), which says what the check reads, how a
+line is reworded to pass it, and how to turn such a line off in an agent that
+has a switch for it — so the error carries its own fix, for the person who
+reads it or the agent they paste it to. Neither refusal rests the account.
 
 The loader also translates OpenAI-compatible request spellings WorkBuddy
 doesn't take: `max_completion_tokens` becomes `max_tokens`, `developer`
@@ -214,6 +239,22 @@ serves; a model that refused it once gets it that way from then on, until
 the plugin restarts. A chat ending with the assistant's message (a prefill)
 is refused as before.
 
+WorkBuddy's safety filter can refuse a reply it has begun:
+`deepseek-v4.1-flash` reasoned, said "Sorry, I can't respond to this
+question.", and ended with `finish_reason: "content_filter"` and no output
+tokens, all under a 200 (#540). Since 0.2.4 that line is taken out of a
+streamed chat ending `content_filter`, so the reply says nothing before the
+filter's stop: magpie hands such a refusal to the group's next member
+instead of passing it to the agent as an answer. Only text that is still
+the filter's line is held, so any other reply's words go as they come; the
+same words ending `stop`, or the filter cutting off a reply after other
+words, go through as they came.
+copilot.tencent.com sends the line with a newline on each side
+(`"\nSorry, I can't respond to this question.\n"`); since 0.2.5 white
+space around it no longer lets it through. It also puts `"tool_calls": []` on
+every delta; since 0.2.6 only a list with a call in it lets the reply
+through as it came.
+
 ## Models
 
 When you are signed in, the models are the ones WorkBuddy's product config
@@ -244,6 +285,18 @@ that names no level goes at the model's own default from the config
 client sends it: WorkBuddy doesn't think when a chat names none, so
 OpenCode's default variant got answers without thinking. An effort the
 client names, `none` too, goes as it came.
+
+One value differs from the config, measured with real requests:
+DeepSeek-V4.1-Flash (and its paid `-sg` id) lists `none`, though the
+config says it only reasons: WorkBuddy answers `reasoning_effort: "none"`
+on it with no thinking at all (since 0.2.7, #563).
+
+A model's context is the config's `maxInputTokens` on both sites. 0.2.7
+capped DeepSeek-V4.1-Flash at 100000 on `workbuddy` (copilot.tencent.com)
+from one report's error; China accounts took prompts up to 992,389 tokens
+on it, so 0.2.8 lifted the cap (#561). A prompt WorkBuddy does find too
+long ("prompt is too long: … > … maximum") is answered with its own 400,
+passed on as it came, which magpie takes as the context overflowing.
 
 A chat goes gzipped (`Content-Encoding: gzip`), as WorkBuddy's own client
 sends its model requests (`RequestBodyGzip` in both builds' product.json).
@@ -425,14 +478,14 @@ An `inactive` answer is kept for the whole Beijing day: the plugin host
 gives it no recheck, and a manual refresh reads the kept one (tracked in
 [yetone/magpie#2696](https://github.com/yetone/magpie/issues/2696)).
 
-## This fork (0.2.1)
+## This fork (0.2.8)
 
 A personal fork of the upstream package, deployed locally at
 `~/.config/magpie/plugins/local/workbuddy-auth` as a **path** plugin whose
 `package.json` keeps the official package name, so magpie's `plugin move`
 recognises it and never fetches the npm package over it.
 
-It is upstream **0.2.0** plus five changes the upstream package still
+It is upstream **0.2.8** plus five changes the upstream package still
 lacks, all about one thing: a refusal must say what it means for the
 sign-in, and a sign-in that has ended must be said so.
 
